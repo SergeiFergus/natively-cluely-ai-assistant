@@ -1,3 +1,14 @@
+> ## Fork notice
+> This is a community fork of Natively, maintained by [@SergeiFergus](https://github.com/SergeiFergus) for **personal, non-commercial use only**.
+>
+> **This project is based on Natively, originally developed by Natively AI Private Limited.**
+>
+> It is distributed under the original [Natively Personal Use Source License v1.0](LICENSE). This fork is not affiliated with, endorsed by, or a commercial offering of Natively AI Private Limited.
+>
+> **Changes in this fork** (see [PATCH_NOTES.md](PATCH_NOTES.md)): recognise current Anthropic model IDs (Opus 4.x / Sonnet 5) in the model picker, a Windows IPv4 dev-launch fix, and a partial Russian UI localisation with an in-app EN/RU switch.
+
+---
+
 # [Sponsored by Recall AI - API for desktop recording](https://docs.recall.ai/docs/desktop-sdk?utm_source=github&utm_medium=sponsorship&utm_campaign=evinjohnn-natively-ai-assistant)
 
 If you’re looking for a hosted desktop recording API, consider checking out [Recall.ai](https://docs.recall.ai/docs/desktop-sdk?utm_source=github&utm_medium=sponsorship&utm_campaign=evinjohnn-natively-ai-assistant), an API that records Zoom, Google Meet, Microsoft Teams, in-person meetings, and more.

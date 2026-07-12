@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useT } from '../i18n';
 import { Download, Trash2, HardDrive, Check, Loader2, Zap, AlertCircle, ChevronDown, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { isMac } from '../utils/platformUtils';
@@ -115,6 +116,7 @@ function PremiumSelect({ label, value, options, onChange, placeholder }: any) {
 }
 
 export function LocalWhisperModelPanel() {
+    const t = useT();
     const [models, setModels] = useState<ModelInfo[]>([]);
     const [hardware, setHardware] = useState<HardwareInfo | null>(null);
     const [config, setConfig] = useState<ChannelConfig>({
@@ -374,7 +376,7 @@ export function LocalWhisperModelPanel() {
             )}
             <div className="bg-bg-card rounded-xl border border-border-subtle p-5 shadow-sm">
                 <div className="mb-5">
-                    <h3 className="text-sm font-semibold text-text-primary">Local Engine Configuration</h3>
+                    <h3 className="text-sm font-semibold text-text-primary">{t('Local Engine Configuration')}</h3>
                     <p className="text-xs text-text-secondary mt-1 leading-relaxed">Select the AI models you want to use for Speech-to-Text inference.</p>
                 </div>
 
@@ -386,7 +388,7 @@ export function LocalWhisperModelPanel() {
                         onChange={(e) => toggleDualChannel(e.target.checked)} 
                     />
                     <div>
-                        <span className="text-sm font-medium text-text-primary block transition-colors group-hover:text-accent-primary">Split Audio Channels</span>
+                        <span className="text-sm font-medium text-text-primary block transition-colors group-hover:text-accent-primary">{t('Split Audio Channels')}</span>
                         <span className="text-xs text-text-tertiary mt-0.5 block">Use different models for microphone and system audio</span>
                     </div>
                     <div className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-300 ease-[cubic-bezier(0.23,1,0.32,1)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary focus-visible:ring-opacity-75 ${config.enabled ? 'bg-accent-primary' : 'bg-border-muted'}`}>
@@ -443,7 +445,7 @@ export function LocalWhisperModelPanel() {
 
             <div className="bg-bg-card rounded-xl border border-border-subtle overflow-hidden shadow-sm relative z-0">
                 <div className="px-5 py-4 bg-bg-elevated/50 border-b border-border-subtle flex justify-between items-center">
-                    <h3 className="text-sm font-semibold text-text-primary">Model Manager</h3>
+                    <h3 className="text-sm font-semibold text-text-primary">{t('Model Manager')}</h3>
                     {hardware?.recommendedModel && (
                         <span className="text-[11px] text-text-tertiary font-medium bg-bg-input px-2 py-1 rounded-md border border-border-subtle">
                             Recommended for your {isMac ? 'Mac' : 'PC'}: <span className="text-text-primary">{models.find(m => m.id === hardware.recommendedModel)?.name}</span>

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useT } from '../../i18n';
 import { Plus, Trash2, Edit2, AlertCircle, CheckCircle, Save, ChevronDown, Check, RefreshCw, ExternalLink, Loader2, LogOut } from 'lucide-react';
 import { CODEX_CLI_MODEL, CODEX_CLI_MODEL_PRESETS, codexCliSelectorId, STANDARD_CLOUD_MODELS, prettifyModelId } from '../../utils/modelUtils';
 import { validateCurl } from '../../lib/curl-validator';
@@ -171,6 +172,7 @@ const CodexCliModelField: React.FC<{
 );
 
 export const AIProvidersSettings: React.FC = () => {
+    const t = useT();
     // --- Standard Providers ---
     const [apiKey, setApiKey] = useState('');
     const [groqApiKey, setGroqApiKey] = useState('');
@@ -922,9 +924,9 @@ export const AIProvidersSettings: React.FC = () => {
     return (
         <div className="space-y-5 animated fadeIn pb-10">
             <header>
-                <h3 className="text-lg font-bold text-text-primary mb-1">AI Providers</h3>
+                <h3 className="text-lg font-bold text-text-primary mb-1">{t('AI Providers')}</h3>
                 <p className="text-xs text-text-secondary mb-5">
-                    Pick a default model and connect the cloud, local, or custom providers you want available.
+                    {t('Pick a default model and connect the cloud, local, or custom providers you want available.')}
                 </p>
             </header>
 
@@ -932,8 +934,8 @@ export const AIProvidersSettings: React.FC = () => {
             <div className="space-y-5">
                 <div className="bg-bg-item-surface rounded-xl p-5 border border-border-subtle flex items-center justify-between">
                     <div>
-                        <label className="block text-xs font-medium text-text-primary uppercase tracking-wide mb-0">Active Model</label>
-                        <p className="text-[10px] text-text-secondary">Applies to new chats instantly.</p>
+                        <label className="block text-xs font-medium text-text-primary uppercase tracking-wide mb-0">{t('Active Model')}</label>
+                        <p className="text-[10px] text-text-secondary">{t('Applies to new chats instantly.')}</p>
                     </div>
                     <ModelSelect
                         value={defaultModel}
@@ -983,8 +985,8 @@ export const AIProvidersSettings: React.FC = () => {
             {/* Cloud Providers */}
             <div className="space-y-5">
                 <div>
-                    <h3 className="text-sm font-bold text-text-primary mb-1">Cloud Providers</h3>
-                    <p className="text-xs text-text-secondary mb-2">Add API keys to unlock cloud AI models.</p>
+                    <h3 className="text-sm font-bold text-text-primary mb-1">{t('Cloud Providers')}</h3>
+                    <p className="text-xs text-text-secondary mb-2">{t('Add API keys to unlock cloud AI models.')}</p>
                 </div>
 
                 <div className="space-y-4">

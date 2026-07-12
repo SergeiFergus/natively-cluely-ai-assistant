@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useLanguage } from '../i18n';
 import packageJson from '../../package.json';
 import {
     X, Mic, Speaker, Monitor, Keyboard, User, LifeBuoy, LogOut, Upload,
@@ -365,6 +366,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
     initialHasNativelyKey = false,
 }) => {
     const isLight = useResolvedTheme() === 'light';
+    const { t, lang, setLang } = useLanguage();
     const [activeTab, setActiveTab] = useState(initialTab);
 
     // Sync active tab when modal opens
@@ -1428,13 +1430,13 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                         {/* Sidebar */}
                         <div className="w-64 bg-bg-sidebar flex flex-col border-r border-border-subtle">
                             <div className="p-6 pb-2 overflow-y-auto flex-1 min-h-0">
-                                <h2 className="font-semibold text-gray-400 text-xs uppercase tracking-wider mb-2">Settings</h2>
+                                <h2 className="font-semibold text-gray-400 text-xs uppercase tracking-wider mb-2">{t('Settings')}</h2>
                                 <nav className="space-y-1">
                                     <button
                                         onClick={() => setActiveTab('general')}
                                         className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'general' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                     >
-                                        <Monitor size={16} /> General
+                                        <Monitor size={16} /> {t('General')}
                                     </button>
                                     <button
                                         onClick={() => setActiveTab('natively-api')}
@@ -1454,72 +1456,85 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                         onClick={() => setActiveTab('ai-providers')}
                                         className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'ai-providers' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                     >
-                                        <FlaskConical size={16} /> AI Providers
+                                        <FlaskConical size={16} /> {t('AI Providers')}
                                     </button>
                                     <button
                                         onClick={() => setActiveTab('skills')}
                                         className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'skills' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                     >
-                                        <Folder size={16} className={activeTab === 'skills' ? 'text-accent-primary' : 'text-text-secondary'} /> Skills
+                                        <Folder size={16} className={activeTab === 'skills' ? 'text-accent-primary' : 'text-text-secondary'} /> {t('Skills')}
                                     </button>
                                     <button
                                         onClick={() => setActiveTab('calendar')}
                                         className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'calendar' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                     >
-                                        <Calendar size={16} /> Calendar
+                                        <Calendar size={16} /> {t('Calendar')}
                                     </button>
                                     <button
                                         onClick={() => setActiveTab('audio')}
                                         className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'audio' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                     >
-                                        <Mic size={16} /> Audio
+                                        <Mic size={16} /> {t('Audio')}
                                     </button>
                                     <button
                                         onClick={() => setActiveTab('keybinds')}
                                         className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'keybinds' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                     >
-                                        <Keyboard size={16} /> Keybinds
+                                        <Keyboard size={16} /> {t('Keybinds')}
                                     </button>
 
                                     <button
                                         onClick={() => setActiveTab('phone-mirror')}
                                         className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'phone-mirror' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                     >
-                                        <Smartphone size={16} /> Sync
+                                        <Smartphone size={16} /> {t('Sync')}
                                     </button>
 
                                     <button
                                         onClick={() => setActiveTab('intelligence')}
                                         className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'intelligence' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                     >
-                                        <Cpu size={16} className={activeTab === 'intelligence' ? 'text-accent-primary' : ''} /> Intelligence
+                                        <Cpu size={16} className={activeTab === 'intelligence' ? 'text-accent-primary' : ''} /> {t('Intelligence')}
                                     </button>
 
                                     <button
                                         onClick={() => setActiveTab('help')}
                                         className={`w-full text-left px-3 py-2 rounded-lg text-[13px] font-medium transition-colors flex items-center gap-3 ${activeTab === 'help' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                     >
-                                        <HelpCircle size={16} /> Setup & Help
+                                        <HelpCircle size={16} /> {t('Setup & Help')}
                                     </button>
 
                                     <button
                                         onClick={() => setActiveTab('about')}
                                         className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'about' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                     >
-                                        <Info size={16} /> About
+                                        <Info size={16} /> {t('About')}
                                     </button>
                                 </nav>
                             </div>
 
                             <div className="mt-auto py-4 px-6 border-t border-border-subtle">
+                                <div className="flex items-center justify-between mb-3 px-3">
+                                    <span className="text-sm font-medium text-text-secondary">{t('Language')}</span>
+                                    <div className="flex items-center gap-1 bg-bg-item-active/50 rounded-lg p-0.5">
+                                        <button
+                                            onClick={() => setLang('en')}
+                                            className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${lang === 'en' ? 'bg-bg-item-active text-text-primary shadow' : 'text-text-secondary hover:text-text-primary'}`}
+                                        >EN</button>
+                                        <button
+                                            onClick={() => setLang('ru')}
+                                            className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${lang === 'ru' ? 'bg-bg-item-active text-text-primary shadow' : 'text-text-secondary hover:text-text-primary'}`}
+                                        >RU</button>
+                                    </div>
+                                </div>
                                 <button
                                     onClick={() => window.electronAPI.quitApp()}
                                     className="w-full text-left px-3 py-2 rounded-lg text-sm font-medium text-red-400 hover:bg-red-500/10 transition-colors flex items-center gap-3"
                                 >
-                                    <LogOut size={16} /> Quit Natively
+                                    <LogOut size={16} /> {t('Quit Natively')}
                                 </button>
                                 <button onClick={onClose} className="group mt-2 w-full text-left px-3 py-2 rounded-lg text-sm font-medium text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50 transition-colors flex items-center gap-3">
-                                    <X size={18} className="group-hover:text-red-500 transition-colors" /> Close
+                                    <X size={18} className="group-hover:text-red-500 transition-colors" /> {t('Close')}
                                 </button>
                             </div>
                         </div>
@@ -1552,7 +1567,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                                     ) : (
                                                         <Ghost size={18} className="text-text-primary" />
                                                     )}
-                                                    <h3 className="text-lg font-bold text-text-primary">{isUndetectable ? 'Undetectable' : 'Detectable'}</h3>
+                                                    <h3 className="text-lg font-bold text-text-primary">{isUndetectable ? t('Undetectable') : t('Detectable')}</h3>
                                                 </div>
                                                 <p className="text-xs text-text-secondary">
                                                     Natively is currently {isUndetectable ? 'undetectable' : 'detectable'} by screen-sharing. <button onClick={() => window.electronAPI?.openExternal?.('https://natively.software/supportedapps')} className="text-blue-400 hover:underline">Supported apps here</button>
@@ -1577,7 +1592,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                             <div className="flex flex-col gap-1">
                                                 <div className="flex items-center gap-2">
                                                     <PointerOff size={18} className={isMousePassthrough ? 'text-sky-400' : 'text-text-primary'} />
-                                                    <h3 className="text-lg font-bold text-text-primary">Mouse Passthrough</h3>
+                                                    <h3 className="text-lg font-bold text-text-primary">{t('Mouse Passthrough')}</h3>
                                                 </div>
                                                 <p className="text-xs text-text-secondary">
                                                     Overlay stays visible but lets all mouse clicks pass through to the app beneath.
@@ -1596,7 +1611,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                         </div>
 
                                         <div>
-                                            <h3 className="text-lg font-bold text-text-primary mb-1">General settings</h3>
+                                            <h3 className="text-lg font-bold text-text-primary mb-1">{t('General settings')}</h3>
                                             <p className="text-xs text-text-secondary mb-2">Customize how Natively works for you</p>
 
                                             <div className={`rounded-xl border ${isLight ? 'bg-bg-card border-border-subtle divide-y divide-border-subtle' : 'bg-transparent border-transparent divide-y divide-border-subtle/20'}`}>
@@ -1614,7 +1629,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                                             <Power size={20} />
                                                         </div>
                                                         <div>
-                                                            <h3 className="text-sm font-bold text-text-primary">Open Natively when you log in</h3>
+                                                            <h3 className="text-sm font-bold text-text-primary">{t('Open Natively when you log in')}</h3>
                                                             <p className="text-xs text-text-secondary mt-0.5">Natively will open automatically when you log in to your computer</p>
                                                         </div>
                                                     </div>
@@ -1643,7 +1658,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                                             <Shield size={20} />
                                                         </div>
                                                         <div className="flex-1">
-                                                            <h3 className="text-sm font-bold text-text-primary">Do not save meetings</h3>
+                                                            <h3 className="text-sm font-bold text-text-primary">{t('Do not save meetings')}</h3>
                                                             <p className="text-xs text-text-secondary mt-0.5 leading-normal">When enabled, live assistance works but transcripts, summaries, and history are discarded when the meeting ends</p>
                                                         </div>
                                                     </div>
@@ -1675,7 +1690,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                                             <Terminal size={20} />
                                                         </div>
                                                         <div>
-                                                            <h3 className="text-sm font-bold text-text-primary">Verbose debug logging</h3>
+                                                            <h3 className="text-sm font-bold text-text-primary">{t('Verbose debug logging')}</h3>
                                                             <p className="text-xs text-text-secondary mt-0.5">Print detailed audio, STT, and pipeline diagnostics</p>
                                                         </div>
                                                     </div>
@@ -1743,7 +1758,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                                             <MessageSquare size={20} />
                                                         </div>
                                                         <div>
-                                                            <h3 className="text-sm font-bold text-text-primary">Interviewer Transcript</h3>
+                                                            <h3 className="text-sm font-bold text-text-primary">{t('Interviewer Transcript')}</h3>
                                                             <p className="text-xs text-text-secondary mt-0.5">Show real-time transcription of the interviewer</p>
                                                         </div>
                                                     </div>
@@ -1773,7 +1788,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                                             <ArrowDown size={20} />
                                                         </div>
                                                         <div>
-                                                            <h3 className="text-sm font-bold text-text-primary">Auto Scroll</h3>
+                                                            <h3 className="text-sm font-bold text-text-primary">{t('Auto Scroll')}</h3>
                                                             <p className="text-xs text-text-secondary mt-0.5">Automatically scroll to the latest message as new responses arrive</p>
                                                         </div>
                                                     </div>
@@ -2686,8 +2701,8 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
 
                                     {/* ── Audio Configuration Section ── */}
                                     <div>
-                                        <h3 className="text-lg font-bold text-text-primary mb-1">Audio Configuration</h3>
-                                        <p className="text-xs text-text-secondary mb-5">Manage input and output devices.</p>
+                                        <h3 className="text-lg font-bold text-text-primary mb-1">{t('Audio Configuration')}</h3>
+                                        <p className="text-xs text-text-secondary mb-5">{t('Manage input and output devices.')}</p>
 
                                         {/* Device-fallback banner: shown when main process couldn't
                                             open the selected device and silently used the default. */}
