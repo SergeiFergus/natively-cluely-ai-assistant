@@ -256,9 +256,34 @@ export class OnboardingOrchestrator {
     return this.cachedSnapshot
   }
 
+  // FREEZE FIX (2026-07-18): notify() used to iterate the LIVE listener Set.
+  // Set.forEach visits entries added during iteration, so a listener that
+  // (via React's sync external-store flush) causes a new subscribe() while
+  // notify() is running extends the iteration — under the right boot timing
+  // this never terminates: the launcher renderer blocks inside one notify()
+  // call, allocating scheduling state until OOM (black-splash freeze, rss
+  // +~1GB/30s, renderer-gone). Captured live via CDP pause: stack was
+  // checkPermissions.then → setUserState → notify → listeners.forEach.
+  // Iterate a snapshot instead, and flatten re-entrant notify() calls into
+  // one queued re-run so nested notification can't recurse either.
+  private _notifying = false;
+  private _notifyQueued = false;
+
   private notify(): void {
-    this.revision++;
-    this.listeners.forEach(l => l(this.state))
+    if (this._notifying) {
+      this._notifyQueued = true;
+      return;
+    }
+    this._notifying = true;
+    try {
+      do {
+        this._notifyQueued = false;
+        this.revision++;
+        [...this.listeners].forEach(l => l(this.state));
+      } while (this._notifyQueued);
+    } finally {
+      this._notifying = false;
+    }
     // A state change may have made a stage newly eligible (foreground regained,
     // meeting ended, usage tick, user-state patch, slot freed on dismiss). Re-arm
     // the drain timer if it had stopped. Idempotent — no-op if already ticking or
@@ -430,9 +455,14 @@ export class OnboardingOrchestrator {
   private evaluateAndDispatch(): void {
     const ctx = this.buildCtx();
     let progressMade = false;
+    // Belt-and-suspenders for the freeze fix in shouldShowToaster: a stage
+    // that already made progress in THIS call must not be reprocessed by a
+    // later do-while pass, whatever its config looks like.
+    const handledThisPass = new Set<ToasterId>();
     do {
       progressMade = false;
       for (const id of this.state.queue) {
+        if (handledThisPass.has(id)) continue;
         const config = this.stageConfigs.find(c => c.id === id);
         if (!config) continue;
 
@@ -441,6 +471,7 @@ export class OnboardingOrchestrator {
         if (config.skipWhen?.(ctx.userState) && !this.state.skipped.has(id)) {
           this.state.skipped.add(id);
           this.persist();
+          handledThisPass.add(id);
           progressMade = true;
           continue;
         }
@@ -450,6 +481,7 @@ export class OnboardingOrchestrator {
           // never render UI; their only purpose is to gate downstream stages.
           if (config.isGateOnly) {
             this.completeToaster(id, false);
+            handledThisPass.add(id);
             progressMade = true;
             continue;
           }
@@ -468,6 +500,17 @@ export class OnboardingOrchestrator {
   shouldShowToaster(id: ToasterId, ctx: Ctx, config: StageConfig): boolean {
     // 0. Explicitly dismissed this session — never re-raise until next launch.
     if (this.dismissedThisSession.has(id)) return false;
+
+    // 0b. FREEZE FIX (2026-07-18): a completed gate-only stage must never
+    // re-dispatch. Gate stages (e.g. quiet_window) have no onceEver, so the
+    // completed check in step 2 is skipped for them; once their predicate is
+    // permanently true (turnCount crossed the threshold), every
+    // evaluateAndDispatch pass re-completes them → progressMade=true → the
+    // do-while never exits → infinite persist()/notify() storm (~20k
+    // localStorage writes/sec) → launcher freeze, unbounded memory growth in
+    // renderer AND main, OOM crash. Caught live via a Storage.setItem breaker:
+    // stack was tick → evaluateAndDispatch → completeToaster → persist.
+    if (config.isGateOnly && ctx.completed[id] != null) return false;
 
     // 1. Hard skip — user-state
     if (config.skipWhen?.(ctx.userState)) return false;
@@ -555,6 +598,12 @@ export class OnboardingOrchestrator {
   // ─── User state injection ─────────────────────────────────────
 
   setUserState(patch: Partial<UserState>): void {
+    // No-op patches must not notify: App.tsx pushes the same user-state values
+    // repeatedly (boot IPC callbacks, dep-triggered effects), and every notify
+    // bumps the revision → new getSnapshot identity → host re-render. Skipping
+    // identical patches starves the notify feedback cycle of fuel.
+    const keys = Object.keys(patch) as (keyof UserState)[];
+    if (keys.every(k => this.userState[k] === patch[k])) return;
     this.userState = { ...this.userState, ...patch };
     this.notify();
   }

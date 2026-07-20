@@ -36,6 +36,21 @@ const LANG_MAP: Record<string, string | null> = {
   'hi-IN': 'hindi',
 };
 
+// The rest of the app stores the STT language as an internal key from
+// electron/config/languages.ts ('russian', 'english-us', ...), while LANG_MAP
+// above is keyed by BCP47. An unmapped key must not silently fall back to
+// auto-detect: on short segments Whisper then misdetects the language and
+// emits an English translation instead of a transcript. Whisper (transformers)
+// accepts full lowercase language names, so internal keys resolve directly.
+function resolveWhisperLanguage(key: string | null | undefined): string | null {
+  if (!key || key === 'auto') return null;
+  if (key in LANG_MAP) return LANG_MAP[key];
+  const k = String(key).toLowerCase();
+  if (k.startsWith('english')) return 'english'; // 'english-us', 'english-uk', ...
+  if (/^[a-z]+$/.test(k)) return k;              // 'russian', 'french', ...
+  return null;
+}
+
 let pipe: any = null;
 let loadedModelId = '';
 
@@ -265,7 +280,7 @@ parentPort.on('message', async (msg: any) => {
       return;
     }
     try {
-      let language: string | null = LANG_MAP[msg.language] ?? null;
+      let language: string | null = resolveWhisperLanguage(msg.language);
       const streaming: boolean = !!msg.streaming;
 
       // English-only checkpoints (Distil-Whisper + .en variants) have no

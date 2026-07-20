@@ -41,7 +41,7 @@ import { clearLoadSentinel, modelPreloader, writeLoadSentinel } from './whisper/
 import { buildWorkerInitMessage } from './whisper/inferenceConfig';
 import { resolveWhisperWorkerPath } from './whisper/workerPathResolver';
 import type { WorkerOutMessage } from './whisper/types';
-import { acquireOnnxSlot, hasEnoughMemoryForOnnxSession, getMinFreeGBForOnnxSession } from '../utils/onnxThreadConfig';
+import { acquireOnnxSlot, hasEnoughMemoryForOnnxSession, getMinFreeGBForOnnxSession, withOnnxWorkerInitLock } from '../utils/onnxThreadConfig';
 
 export class LocalWhisperSTT extends EventEmitter {
     private readonly modelId: string;
@@ -141,6 +141,38 @@ export class LocalWhisperSTT extends EventEmitter {
     private lastEmittedText = '';
     private streamingTaskInFlight = false;
     private streamingTaskId: string | null = null;
+
+    // Adaptive partial-decode kill switch for slow hardware. Every streaming
+    // (partial) pass re-decodes the ENTIRE open segment, and Whisper pads
+    // audio to 30s before the encoder — so each partial pass costs about as
+    // much as a final pass. On machines where one pass takes multiple
+    // seconds, the partial loop keeps the worker saturated, final passes
+    // queue behind it, and the transcript falls tens of seconds to minutes
+    // behind live audio. Measure each partial pass; after 3 consecutive slow
+    // ones, stop issuing partial decodes for the rest of the session and let
+    // finals have all the compute. First-partial p50 on such hardware was
+    // >12s anyway — the "live" partials were not live.
+    // Dispatch timestamps per streaming taskId. A single `dispatchedAt` var
+    // is NOT enough: under continuous speech the soft-commit invalidates the
+    // in-flight task, the loop dispatches a fresh partial, and the stale
+    // task's late return would be measured against the NEWEST dispatch time —
+    // yielding a tiny bogus duration that resets the slow-pass counter and
+    // keeps the kill switch from ever engaging on exactly the hardware that
+    // needs it. Bounded: entries are deleted on return and cleared on reset.
+    private streamingDispatchTimes: Map<string, number> = new Map();
+    private consecutiveSlowStreamingPasses = 0;
+    // Process-wide: hardware speed doesn't change between meetings, so once
+    // one instance proves partial passes are too slow, every later instance
+    // (and channel) starts with partials off instead of re-saturating the
+    // worker for the first ~30s of every new meeting while it re-learns.
+    private static slowHardwarePartialsDisabled = false;
+    private static readonly SLOW_STREAMING_PASS_MS = 2500;
+    private static readonly SLOW_PASSES_TO_DISABLE = 2;
+
+    // Count of dispatched final (non-streaming) transcribe tasks that have
+    // not yet returned a result/error. Used by flushPendingSpeech() so
+    // "What to answer" can wait for in-flight decodes to land in context.
+    private outstandingFinals = 0;
 
     constructor(modelId: string) {
         super();
@@ -349,6 +381,7 @@ export class LocalWhisperSTT extends EventEmitter {
             clearTimeout(this.streamingTimer);
             this.streamingTimer = null;
         }
+        this.streamingDispatchTimes.clear();
         this.clearStreamingWatchdog();
         this.streamingTaskInFlight = false;
         this.streamingTaskId = null;
@@ -390,6 +423,8 @@ export class LocalWhisperSTT extends EventEmitter {
         if (!this.vad.isInSpeech()) { this.recordStreamingStall(); return; }
         // Don't stack streaming requests — wait for the previous one to finish.
         if (this.streamingTaskInFlight) { this.recordStreamingStall(); return; }
+        // Hardware too slow for live partials — finals only (see field docs).
+        if (LocalWhisperSTT.slowHardwarePartialsDisabled) { this.recordStreamingStall(); return; }
 
         const open = this.vad.peekOpenSegment();
         if (!open || open.durationMs < this.streamingMinAudioMs) {
@@ -405,11 +440,80 @@ export class LocalWhisperSTT extends EventEmitter {
         const taskId = `s${++this.taskCounter}`;
         this.streamingTaskId = taskId;
         const copy = open.samples.slice();
+        if (this.streamingDispatchTimes.size > 64) this.streamingDispatchTimes.clear();
+        this.streamingDispatchTimes.set(taskId, performance.now());
         this.armStreamingWatchdog();
         this.worker.postMessage(
             { type: 'transcribe', taskId, audio: copy, language: this.language, streaming: true },
             [copy.buffer]
         );
+    }
+
+    private notePartialPassDuration(taskId: string | undefined): void {
+        if (!taskId) return;
+        const dispatchedAt = this.streamingDispatchTimes.get(taskId);
+        if (dispatchedAt === undefined) return;
+        this.streamingDispatchTimes.delete(taskId);
+        const passMs = performance.now() - dispatchedAt;
+        if (LocalWhisperSTT.slowHardwarePartialsDisabled) return;
+        if (passMs >= LocalWhisperSTT.SLOW_STREAMING_PASS_MS) {
+            this.consecutiveSlowStreamingPasses++;
+            if (this.consecutiveSlowStreamingPasses >= LocalWhisperSTT.SLOW_PASSES_TO_DISABLE) {
+                LocalWhisperSTT.slowHardwarePartialsDisabled = true;
+                const channelTag = this.channelLabel ? `:${this.channelLabel}` : '';
+                console.warn(
+                    `[LocalWhisperSTT${channelTag}] ${this.consecutiveSlowStreamingPasses} consecutive partial passes took >=${LocalWhisperSTT.SLOW_STREAMING_PASS_MS}ms (last ${Math.round(passMs)}ms) — ` +
+                    `disabling live partial decodes for the rest of this app run so final passes keep up with real time. ` +
+                    `Consider a smaller/faster model for live partials on this hardware.`
+                );
+            }
+        } else {
+            this.consecutiveSlowStreamingPasses = 0;
+        }
+    }
+
+    /**
+     * Force-commit any speech currently buffered in the VAD and wait until
+     * all outstanding final decodes have returned (i.e. their transcripts
+     * have been emitted synchronously to listeners). Used by the
+     * "What to answer" path so a question the user JUST heard makes it into
+     * the AI context before the answer prompt is assembled. Resolves true
+     * when the pipeline is quiescent, false on timeout.
+     */
+    /**
+     * True while this channel still has speech that has not yet reached
+     * listeners as final text: an open VAD segment, queued buffers, or final
+     * decodes in flight. Used by the cross-channel echo quarantine to know
+     * when the (slower) system channel has caught up.
+     */
+    public hasPendingWork(): boolean {
+        if (!this.isActive) return false;
+        return (this.vad?.isInSpeech() ?? false)
+            || this.outstandingFinals > 0
+            || this.pendingAudio.length > 0;
+    }
+
+    public flushPendingSpeech(timeoutMs: number = 15000): Promise<boolean> {
+        if (!this.isActive || !this.vad) return Promise.resolve(true);
+        this.finalize();
+        if (this.outstandingFinals === 0 && this.pendingAudio.length === 0) {
+            return Promise.resolve(true);
+        }
+        const channelTag = this.channelLabel ? `:${this.channelLabel}` : '';
+        console.log(`[LocalWhisperSTT${channelTag}] flush: waiting on ${this.outstandingFinals} in-flight final(s), ${this.pendingAudio.length} pending buffer(s)`);
+        const startedAt = Date.now();
+        return new Promise<boolean>((resolve) => {
+            const check = () => {
+                if (this.outstandingFinals === 0 && this.pendingAudio.length === 0) { resolve(true); return; }
+                if (!this.worker || Date.now() - startedAt >= timeoutMs) {
+                    console.warn(`[LocalWhisperSTT${channelTag}] flush timed out with ${this.outstandingFinals} final(s) still in flight`);
+                    resolve(false);
+                    return;
+                }
+                setTimeout(check, 200);
+            };
+            check();
+        });
     }
 
     private recordStreamingStall(): void {
@@ -588,6 +692,7 @@ export class LocalWhisperSTT extends EventEmitter {
 
     private sendTranscribe(audio: Float32Array, streaming: boolean): void {
         if (!this.worker) return;
+        if (!streaming) this.outstandingFinals++;
         const taskId = `${streaming ? 's' : 't'}${++this.taskCounter}`;
         const copy = audio.slice();
         this.worker.postMessage(
@@ -628,9 +733,21 @@ export class LocalWhisperSTT extends EventEmitter {
         console.log(`[LocalWhisperSTT] Cold-starting worker for ${this.modelId}`);
         const workerPath = resolveWhisperWorkerPath();
         writeLoadSentinel(this.modelId);
-        this.worker = new Worker(workerPath);
-        this.attachWorkerListeners();
-        this.worker.postMessage(buildWorkerInitMessage(this.modelId));
+        // Spawn inside the global ONNX init lock and hold it until 'ready' —
+        // concurrent onnxruntime native-binding loads across worker threads
+        // intermittently deadlock before any output (see onnxThreadConfig).
+        await withOnnxWorkerInitLock(`whisper-cold:${this.modelId}`, () => new Promise<void>((resolve) => {
+            this.worker = new Worker(workerPath);
+            const w = this.worker;
+            const done = () => resolve();
+            w.once('exit', done);
+            w.once('error', done);
+            w.on('message', (m: any) => {
+                if (m?.type === 'ready' || m?.type === 'error') done();
+            });
+            this.attachWorkerListeners();
+            w.postMessage(buildWorkerInitMessage(this.modelId));
+        })).catch(() => { /* timeout logged by the lock; listeners own recovery */ });
     }
 
     private attachWorkerListeners(): void {
@@ -650,6 +767,13 @@ export class LocalWhisperSTT extends EventEmitter {
             if (!this.isActive && !(this.isDrainingFinals && msg.type === 'result')) return;
 
             if (msg.type === 'partial') {
+                // Measure the pass duration for EVERY returned partial —
+                // including late ones whose segment was finalized mid-pass.
+                // Under continuous speech the 14s soft-commit invalidates the
+                // in-flight taskId on almost every pass; measuring only the
+                // matched path would starve the slow-hardware kill switch of
+                // samples and it would never engage.
+                this.notePartialPassDuration(msg.taskId);
                 // Drop partials whose segment has already been finalized — the
                 // agreement baseline is reset on every final dispatch and the
                 // taskId is invalidated, so a late partial would otherwise
@@ -660,6 +784,7 @@ export class LocalWhisperSTT extends EventEmitter {
                 }
                 this.handleStreamingPartial(msg.text);
             } else if (msg.type === 'result') {
+                this.outstandingFinals = Math.max(0, this.outstandingFinals - 1);
                 const text = filterHallucination(msg.text);
                 if (text) {
                     if (this.segmentOpenedAt > 0) {
@@ -682,6 +807,9 @@ export class LocalWhisperSTT extends EventEmitter {
                 }
             } else if (msg.type === 'error') {
                 console.error('[LocalWhisperSTT] Worker error:', msg.message);
+                if (msg.taskId?.startsWith('t')) {
+                    this.outstandingFinals = Math.max(0, this.outstandingFinals - 1);
+                }
                 if (this.isDrainingFinals && msg.taskId?.startsWith('t')) {
                     this.drainingFinalsInFlight = Math.max(0, this.drainingFinalsInFlight - 1);
                     if (this.drainingFinalsInFlight === 0 && this.worker) {
@@ -744,6 +872,8 @@ export class LocalWhisperSTT extends EventEmitter {
         // streaming loop must be unblocked — otherwise streamingTaskInFlight
         // stays true and the next tick silently stalls forever.
         this.worker.on('exit', (code) => {
+            // No worker → no in-flight finals; unblock any flushPendingSpeech waiter.
+            this.outstandingFinals = 0;
             if (code === 0) {
                 clearLoadSentinel(this.modelId);
                 return; // clean shutdown

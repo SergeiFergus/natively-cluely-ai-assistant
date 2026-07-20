@@ -6876,6 +6876,22 @@ export function initializeIpcHandlers(appState: AppState): void {
           }
         }
 
+        // Pre-flight: the question the user just heard may still be sitting in
+        // the local STT decode pipeline (slow-hardware whisper lag). Force-commit
+        // buffered speech and wait for those decodes to reach SessionTracker so
+        // the answer is built from the CURRENT question, not last-minute context.
+        // No-op for cloud STT. Bounded by the timeout, so worst case adds ~9s.
+        if (!question) {
+          try {
+            // 15s ceiling: one final decode pass of a full 14s segment takes
+            // 9-15s on slow (iGPU/CPU-only) hardware — a 9s ceiling was
+            // observed timing out with the decode landing moments later.
+            await (appState as any).flushSttBeforeAnswer?.(15000);
+          } catch (flushErr) {
+            console.warn('[IPC] generate-what-to-say: STT flush failed (continuing):', flushErr);
+          }
+        }
+
         // Question and imagePaths are now optional - IntelligenceManager infers from transcript
         const answer = await intelligenceManager.runWhatShouldISay(
           question,

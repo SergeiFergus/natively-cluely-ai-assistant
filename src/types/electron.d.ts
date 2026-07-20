@@ -237,6 +237,7 @@ export interface ElectronAPI {
   onSystemAudioPermissionDenied: (callback: (message: string) => void) => () => void
   onDeviceSelectionApplied: (callback: (payload: { kind: 'input' | 'output'; requested: string | null; actual: string | null; fellBack: boolean; reason?: string }) => void) => () => void
   onAudioCaptureFailed: (callback: (payload: { channel: 'system' | 'mic'; message: string; attempt: number; maxAttempts: number; terminal?: boolean; stuck?: boolean }) => void) => () => void
+  onAudioCaptureRecovered: (callback: (payload: { channel: 'system' | 'mic' }) => void) => () => void
   onAudioInputAutoSwitched: (callback: (payload: { from: string; to: string; reason: string; message?: string }) => void) => () => void
 
   // STT Status Events

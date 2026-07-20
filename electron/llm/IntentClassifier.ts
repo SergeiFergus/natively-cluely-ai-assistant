@@ -10,7 +10,7 @@ import fs from 'fs';
 import path from 'path';
 import { Worker } from 'worker_threads';
 import { app } from 'electron';
-import { acquireOnnxSlot, hasEnoughMemoryForOnnxSession, getMinFreeGBForOnnxSession } from '../utils/onnxThreadConfig';
+import { acquireOnnxSlot, hasEnoughMemoryForOnnxSession, getMinFreeGBForOnnxSession, withOnnxWorkerInitLock } from '../utils/onnxThreadConfig';
 import {
     clearLoadSentinel as clearOnnxLoadSentinel,
     consumePoisonedOnnxLoad,
@@ -331,7 +331,13 @@ class ZeroShotClassifier {
 
         this.loadingPromise = (async () => {
             try {
-                await this.postToWorker({ type: 'init', ...this.workerConfig() });
+                // Spawn + init inside the global ONNX init lock: concurrent
+                // onnxruntime native-binding loads across worker threads
+                // (this worker vs the Whisper warm-up at boot) intermittently
+                // deadlock before any output (see onnxThreadConfig).
+                await withOnnxWorkerInitLock('intent-classifier', () =>
+                    this.postToWorker({ type: 'init', ...this.workerConfig() }),
+                );
                 this.loaded = true;
                 this.slotRelease = releaseSlot;
             } catch (e) {

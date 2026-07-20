@@ -345,6 +345,9 @@ interface ElectronAPI {
       stuck?: boolean;
     }) => void,
   ) => () => void;
+  onAudioCaptureRecovered: (
+    callback: (payload: { channel: 'system' | 'mic' }) => void,
+  ) => () => void;
   onAudioInputAutoSwitched: (
     callback: (payload: { from: string; to: string; reason: string; message?: string }) => void,
   ) => () => void;
@@ -1564,6 +1567,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('audio-capture-failed', subscription);
     return () => {
       ipcRenderer.removeListener('audio-capture-failed', subscription);
+    };
+  },
+  onAudioCaptureRecovered: (
+    callback: (payload: { channel: 'system' | 'mic' }) => void,
+  ) => {
+    const subscription = (_: any, payload: any) => callback(payload);
+    ipcRenderer.on('audio-capture-recovered', subscription);
+    return () => {
+      ipcRenderer.removeListener('audio-capture-recovered', subscription);
     };
   },
   onAudioInputAutoSwitched: (

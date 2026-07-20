@@ -263,6 +263,36 @@ export class RestSTT extends EventEmitter {
     }
 
     /**
+     * "What to answer" pre-flight (same contract as LocalWhisperSTT):
+     * force-upload whatever audio is still buffered and resolve once the
+     * in-flight upload(s) have completed — i.e. their transcripts have been
+     * emitted to listeners — so the just-heard question is in the AI context
+     * before the answer prompt is assembled. Typically resolves in ~1-2s
+     * (one REST round-trip). Resolves false on timeout.
+     */
+    public flushPendingSpeech(timeoutMs: number = 6000): Promise<boolean> {
+        if (!this.isActive) return Promise.resolve(true);
+        this.flushAndUpload();
+        // Wait only for the upload(s) triggered above to settle — NOT for the
+        // buffer to be empty. Under continuous audio (podcast, monologue) new
+        // chunks keep arriving during the wait, so an empty-buffer condition
+        // would never hold and every button press would eat the full timeout.
+        // Audio that arrives after this call is by definition not part of the
+        // question the user just heard.
+        const quiescent = () => !this.isUploading && !this.flushPending;
+        if (quiescent()) return Promise.resolve(true);
+        const startedAt = Date.now();
+        return new Promise<boolean>((resolve) => {
+            const check = () => {
+                if (quiescent()) { resolve(true); return; }
+                if (!this.isActive || Date.now() - startedAt >= timeoutMs) { resolve(false); return; }
+                setTimeout(check, 150);
+            };
+            check();
+        });
+    }
+
+    /**
      * Concatenate buffered chunks, add WAV header, and upload to REST API
      */
     private async flushAndUpload(): Promise<void> {

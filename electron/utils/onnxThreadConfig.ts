@@ -108,6 +108,38 @@ export function getBoundedOnnxSessionOptions(): OnnxThreadBounds {
 // throws (rare sandboxed Linux configs) — the failure case is just
 // measurement, not a real signal of trouble.
 
+// ─── ONNX worker INIT serialization ─────────────────────────────────────────
+// Loading the onnxruntime-node native binding from several worker_threads at
+// the same time intermittently deadlocks BEFORE the worker's first console
+// output (observed 2026-07-18 once the intent classifier started loading: at
+// boot the Whisper warm-up worker and the intent zero-shot worker spawn within
+// the same second, and either or both can hang forever with no 'error'/'exit'
+// event). Serializing worker STARTUP (spawn → first 'ready'/'error') removes
+// the race; steady-state inference stays fully concurrent. The chain never
+// rejects, and each link is capped by ONNX_INIT_LOCK_TIMEOUT_MS so a genuinely
+// hung worker cannot wedge every later loader behind it.
+const ONNX_INIT_LOCK_TIMEOUT_MS = 120_000;
+let onnxInitChain: Promise<void> = Promise.resolve();
+
+export function withOnnxWorkerInitLock<T>(label: string, fn: () => Promise<T>): Promise<T> {
+    const run = onnxInitChain.then(() => {
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const capped = Promise.race([
+            fn(),
+            new Promise<T>((_, reject) => {
+                timer = setTimeout(
+                    () => reject(new Error(`[onnxInitLock] ${label} init exceeded ${ONNX_INIT_LOCK_TIMEOUT_MS}ms`)),
+                    ONNX_INIT_LOCK_TIMEOUT_MS,
+                );
+            }),
+        ]);
+        return capped.finally(() => { if (timer) clearTimeout(timer); });
+    });
+    // The chain itself must never reject — swallow to keep later links alive.
+    onnxInitChain = run.then((): void => undefined, (): void => undefined);
+    return run;
+}
+
 export type OnnxSlotPriority = 'normal' | 'high';
 
 let inFlightNormal = 0;
@@ -116,7 +148,18 @@ const waitersNormal: Array<() => void> = [];
 const waitersHigh: Array<() => void> = [];
 
 function readMaxConcurrent(): number {
-    return readIntEnv('NATIVELY_ONNX_MAX_CONCURRENT_SESSIONS', 2);
+    // Default raised 2 → 6 (2026-07-18). The cap must cover every LONG-LIVED
+    // slot holder, or a latecomer deadlocks in acquireOnnxSlot() waiting for a
+    // release that never comes. Known persistent holders: Whisper interviewer
+    // + Whisper mic (both 'high'), IntentClassifier zero-shot, local embedding
+    // provider, local reranker (all 'normal', hold for the worker's lifetime),
+    // plus a transient ModelPreloader warm-up during model switches. With the
+    // old cap of 2, a working intent classifier + the warm Whisper worker
+    // exhausted the pool and the second Whisper channel never started — no
+    // transcription, no error, silent hang. Sessions are bounded to 1 intra-op
+    // thread each (see getBoundedOnnxSessionOptions), so 6 concurrent sessions
+    // are cheap; the real OOM guard is hasEnoughMemoryForOnnxSession().
+    return readIntEnv('NATIVELY_ONNX_MAX_CONCURRENT_SESSIONS', 6);
 }
 
 function readMinFreeGB(): number {

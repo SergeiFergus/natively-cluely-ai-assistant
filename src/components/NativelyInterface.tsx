@@ -1624,8 +1624,29 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
           message: payload.message,
           channel: payload.channel,
         });
-        setIsExpanded(true);
+        // Only force the overlay open for SYSTEM audio failures — losing the
+        // interviewer channel breaks the whole product. A mic warning at the
+        // start of a meeting is frequently just "the user hasn't spoken yet"
+        // (and now auto-dismisses on recovery), so it shouldn't yank the
+        // overlay open.
+        if (payload.channel === 'system') {
+          setIsExpanded(true);
+        }
       }
+    });
+    return () => unsub?.();
+  }, []);
+
+  // Auto-dismiss the capture-failure banner when the main process reports the
+  // channel recovered (e.g. mic was silent because the user wasn't talking;
+  // real audio has since arrived). Manual dismiss (X) still works as before.
+  useEffect(() => {
+    const unsub = window.electronAPI?.onAudioCaptureRecovered?.((payload: { channel: 'system' | 'mic' }) => {
+      setSystemAudioWarning(prev =>
+        prev && prev.kind === 'audio-capture-failure' && prev.channel === payload.channel
+          ? null
+          : prev,
+      );
     });
     return () => unsub?.();
   }, []);

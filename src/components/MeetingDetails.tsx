@@ -1242,6 +1242,30 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                     The four callout cards below form one coherent family: same radius, padding, icon
                                     treatment and type scale. They fade + lift in with a short ease-out stagger. */}
 
+                                {/* 0. Empty/failed summary — recovery path. When post-call summary
+                                    generation failed (e.g. no LLM provider reachable at save time),
+                                    summaryStatus is 'failed' and there is no V3 payload, so the V3
+                                    toolbar (with its Regenerate button) never renders — leaving the
+                                    user staring at a blank tab with no way to retry. Give them one. */}
+                                {!isV3Summary && (
+                                    <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+                                        <p className="text-[13px] text-text-secondary max-w-sm leading-relaxed">
+                                            {v3SummaryStatus === 'failed'
+                                                ? t('Summary generation failed after this meeting.')
+                                                : t('No summary has been generated for this meeting yet.')}
+                                        </p>
+                                        <button
+                                            type="button"
+                                            onClick={() => handleRegenerate()}
+                                            disabled={isRegenerating}
+                                            className="h-8 inline-flex items-center gap-1.5 text-[12px] font-medium px-3.5 rounded-md bg-accent-primary/10 text-accent-primary hover:bg-accent-primary/20 disabled:opacity-50 transition-colors"
+                                        >
+                                            <RefreshCw className={`w-3.5 h-3.5 ${isRegenerating ? 'animate-spin' : ''}`} strokeWidth={2} />
+                                            <span>{isRegenerating ? t('Regenerating…') : t('Generate summary')}</span>
+                                        </button>
+                                    </div>
+                                )}
+
                                 {/* 1. Source quality — severity-aware. Benign cleanup notes (segments removed/cleaned)
                                     read as quiet info; genuine concerns (speaker labels, coverage, "verify") stay amber. */}
                                 {/* 1. Source quality warning */}

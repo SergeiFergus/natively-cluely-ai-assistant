@@ -5772,7 +5772,11 @@ const isMultimodal = !!(imagePaths?.length);
     const stream = this.claudeClient.messages.stream({
       model,
       max_tokens: this.getClaudeMaxOutput(model),
-      temperature: INTERACTIVE_TEMPERATURE, // Claude has no seed param; low temp is the determinism lever
+      // temperature intentionally NOT sent: current Claude models (Sonnet 5,
+      // Opus 4.7/4.8, Fable 5) reject non-default sampling params with a 400
+      // ("temperature is deprecated for this model"). Claude 4.6-and-older
+      // accept it, but omitting is safe everywhere — prompting is the
+      // steering lever now.
       thinking: { type: 'disabled' }, // extended thinking off (default, made explicit) for low TTFT
       // CACHE BOUNDARY: system blocks are static; dynamic content lives in `messages` only.
       ...(systemPrompt ? { system: this.buildClaudeSystemBlocks(systemPrompt, model) } : {}),
@@ -7158,6 +7162,31 @@ const isMultimodal = !!(imagePaths?.length);
         }
       } catch (e: any) {
         console.warn(`[LLMHelper] ⚠️ Codex CLI summary failed: ${e.message}. Falling back...`);
+      }
+    }
+
+    // ATTEMPT 2.5: Claude (Anthropic). The chain below was Gemini-centric and
+    // never tried Claude — for a user whose ONLY configured chat provider is a
+    // Claude API key, every meeting ended in "Failed to generate summary after
+    // all fallback attempts" and a permanently empty summary. Claude sits
+    // before Groq/Gemini because it's the user's primary configured provider.
+    if (this.claudeClient) {
+      try {
+        console.log(`[LLMHelper] Attempting Claude for summary...`);
+        const collectClaude = async (): Promise<string> => {
+          let result = '';
+          for await (const chunk of this.streamWithClaude(`Context:\n${context}`, systemPrompt)) {
+            result += chunk;
+          }
+          return result;
+        };
+        const text = await this.withTimeout(collectClaude(), 60000, 'Claude Summary');
+        if (text.trim().length > 0) {
+          console.log(`[LLMHelper] ✅ Claude summary generated successfully.`);
+          return this.processResponse(text);
+        }
+      } catch (e: any) {
+        console.warn(`[LLMHelper] ⚠️ Claude summary failed: ${e.message}. Falling back...`);
       }
     }
 

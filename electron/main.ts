@@ -1083,6 +1083,13 @@ export class AppState {
 
   private hasDebugged: boolean = false
   private isMeetingActive: boolean = false; // Guard for session state leaks
+  // Cross-channel echo suppression: speakers→mic bleed makes the mic channel
+  // transcribe system audio as "user" speech (see electron/audio/echoGuard.ts).
+  private echoGuard = new (require('./audio/echoGuard').EchoGuard)();
+  // Pending user-channel finals held in quarantine while we wait for the
+  // possibly-later-arriving system-channel twin (echo detection). Tracked so
+  // meeting stop can flush them instead of leaking timers.
+  private _userFinalQuarantine: Set<ReturnType<typeof setTimeout>> = new Set();
   private _meetingGeneration = 0;
   private _audioInitPromise: Promise<void> | null = null;
   // AbortController handle for the in-flight startMeeting() audio init, so endMeeting()
@@ -1806,6 +1813,14 @@ export class AppState {
   // call sites are unaffected.
   public sendAudioCaptureFailed(payload: any): void {
     this.sendToMeetingSurfaces('audio-capture-failed', payload);
+  }
+
+  // Counterpart to sendAudioCaptureFailed: tells the renderer a previously
+  // reported channel failure resolved itself (e.g. the mic was silent for the
+  // observation window — user simply wasn't talking — and real audio has now
+  // arrived), so the warning banner can be dismissed automatically.
+  public sendAudioCaptureRecovered(payload: { channel: 'system' | 'mic' }): void {
+    this.sendToMeetingSurfaces('audio-capture-recovered', payload);
   }
 
   public sendSystemAudioPermissionDenied(message: string): void {
@@ -2570,6 +2585,87 @@ export class AppState {
   private googleSTT: STTProvider | null = null; // Interviewer
   private googleSTT_User: STTProvider | null = null; // User
 
+  /**
+   * Deliver one STT segment to every consumer: AI context, JIT RAG indexer,
+   * renderer display, and the negotiation tracker. Split out of the
+   * stt.on('transcript') closure so the EchoGuard quarantine path (delayed
+   * user finals) can dispatch through the identical pipeline.
+   */
+  private dispatchTranscriptSegment(
+    speaker: 'interviewer' | 'user',
+    segment: { text: string; isFinal: boolean; confidence: number; speakerId?: string },
+  ): void {
+    this.intelligenceManager.handleTranscript({
+      speaker: speaker,
+      ...(segment.speakerId ? { speakerId: segment.speakerId } : {}),
+      text: segment.text,
+      timestamp: Date.now(),
+      final: segment.isFinal,
+      confidence: segment.confidence
+    });
+
+    // Feed final transcript to JIT RAG indexer
+    if (segment.isFinal && this.ragManager) {
+      this.ragManager.feedLiveTranscript([{
+        speaker: speaker,
+        text: segment.text,
+        timestamp: Date.now()
+      }]);
+    }
+
+    const payload = {
+      speaker: speaker,
+      ...(segment.speakerId ? { speakerId: segment.speakerId } : {}),
+      text: segment.text,
+      timestamp: Date.now(),
+      final: segment.isFinal,
+      confidence: segment.confidence
+    };
+    // Display-only send, partial-throttled (finals pass through immediately).
+    // The answer path above (handleTranscript / RAG feed) is unaffected.
+    this.sendThrottledTranscript(payload);
+
+    // Feed final recruiter (system audio) transcripts to the premium
+    // negotiation tracker. Issue #272: gate by active mode template so the
+    // tracker never accumulates negotiation state in modes where salary is
+    // out of scope (technical-interview, team-meet, lecture). Output gating
+    // in LLMHelper is the primary defense; gating at the source stops state
+    // from carrying over to any future read site. Fails open if ModesManager
+    // is unavailable.
+    if (segment.isFinal && speaker === 'interviewer') {
+      let trackerFeedAllowed = true;
+      try {
+        const { ModesManager } = require('./services/ModesManager');
+        trackerFeedAllowed = ModesManager.getInstance().isPremiumKnowledgeInterceptAllowed();
+      } catch (_err) {
+        // fail open — preserve existing behaviour for modes that need the tracker
+      }
+      if (trackerFeedAllowed) {
+        this.knowledgeOrchestrator?.feedInterviewerUtterance?.(segment.text);
+      }
+    }
+  }
+
+  /**
+   * "What to answer" pre-flight: force-commit speech still buffered in the
+   * local STT pipeline (both channels) and wait for the decodes to land in
+   * SessionTracker, so the question the user JUST heard is part of the
+   * context the answer is built from. No-op for cloud STT providers.
+   * Resolves false if a flush timed out (context may be stale).
+   */
+  public async flushSttBeforeAnswer(timeoutMs: number = 15000): Promise<boolean> {
+    const targets = [this.googleSTT, this.googleSTT_User];
+    const flushes = targets
+      .filter((stt): stt is STTProvider => !!stt && typeof (stt as any).flushPendingSpeech === 'function')
+      .map((stt) => (stt as any).flushPendingSpeech(timeoutMs) as Promise<boolean>);
+    if (flushes.length === 0) return true;
+    const started = Date.now();
+    const results = await Promise.all(flushes);
+    const ok = results.every(Boolean);
+    console.log(`[Main] STT flush before answer: ${ok ? 'drained' : 'TIMED OUT'} in ${Date.now() - started}ms`);
+    return ok;
+  }
+
   private createSTTProvider(speaker: 'interviewer' | 'user'): STTProvider | null {
     const { CredentialsManager } = require('./services/CredentialsManager');
     const sttProvider = CredentialsManager.getInstance().getSttProvider();
@@ -2719,55 +2815,55 @@ export class AppState {
         return;
       }
 
-      this.intelligenceManager.handleTranscript({
-        speaker: speaker,
-        ...(segment.speakerId ? { speakerId: segment.speakerId } : {}),
-        text: segment.text,
-        timestamp: Date.now(),
-        final: segment.isFinal,
-        confidence: segment.confidence
-      });
-
-      // Feed final transcript to JIT RAG indexer
-      if (segment.isFinal && this.ragManager) {
-        this.ragManager.feedLiveTranscript([{
-          speaker: speaker,
-          text: segment.text,
-          timestamp: Date.now()
-        }]);
-      }
-
-      const payload = {
-        speaker: speaker,
-        ...(segment.speakerId ? { speakerId: segment.speakerId } : {}),
-        text: segment.text,
-        timestamp: Date.now(),
-        final: segment.isFinal,
-        confidence: segment.confidence
-      };
-      // Display-only send, partial-throttled (finals pass through immediately).
-      // The answer path above (handleTranscript / RAG feed) is unaffected.
-      this.sendThrottledTranscript(payload);
-
-      // Feed final recruiter (system audio) transcripts to the premium
-      // negotiation tracker. Issue #272: gate by active mode template so the
-      // tracker never accumulates negotiation state in modes where salary is
-      // out of scope (technical-interview, team-meet, lecture). Output gating
-      // in LLMHelper is the primary defense; gating at the source stops state
-      // from carrying over to any future read site. Fails open if ModesManager
-      // is unavailable.
+      // Cross-channel echo suppression. Speakers→mic bleed makes the mic
+      // channel transcribe system audio as "user" speech, and the AI then
+      // answers the interviewer's questions as if the user asked them.
+      // Interviewer finals feed the guard's window; user finals are checked
+      // against it. Because the two channels decode independently, the mic
+      // twin can arrive BEFORE the system twin — user finals are therefore
+      // quarantined for a few seconds and re-checked before dispatch.
       if (segment.isFinal && speaker === 'interviewer') {
-        let trackerFeedAllowed = true;
-        try {
-          const { ModesManager } = require('./services/ModesManager');
-          trackerFeedAllowed = ModesManager.getInstance().isPremiumKnowledgeInterceptAllowed();
-        } catch (_err) {
-          // fail open — preserve existing behaviour for modes that need the tracker
-        }
-        if (trackerFeedAllowed) {
-          this.knowledgeOrchestrator?.feedInterviewerUtterance?.(segment.text);
-        }
+        this.echoGuard.noteInterviewerFinal(segment.text);
       }
+      if (segment.isFinal && speaker === 'user') {
+        if (this.echoGuard.isUserEcho(segment.text)) {
+          console.log('[EchoGuard] Dropped user-channel echo of system audio', { length: segment.text.length });
+          return;
+        }
+        // Adaptive quarantine: the mic channel usually decodes FASTER than
+        // the system channel (its segments are shorter, its queue smaller),
+        // so at this moment the system-side twin of a speaker-bleed segment
+        // may not have been transcribed yet and the echo window is empty. A
+        // fixed few-second hold is not enough when the system channel is
+        // seconds-to-minutes behind under continuous audio (podcast). So:
+        // re-check every second and only commit once the system channel has
+        // no pending work (its transcripts caught up) or the cap elapses.
+        // When the user speaks during a pause (normal conversation), the
+        // system channel is idle and the hold is a single ~1s tick.
+        const QUARANTINE_POLL_MS = 1000;
+        const QUARANTINE_MAX_MS = 45000;
+        const quarantinedAt = Date.now();
+        const tick = () => {
+          this._userFinalQuarantine.delete(timer);
+          if (!this.isMeetingActive && !this._isDraining) return;
+          if (this.echoGuard.isUserEcho(segment.text)) {
+            console.log('[EchoGuard] Dropped user-channel echo of system audio (quarantine)', { length: segment.text.length });
+            return;
+          }
+          const sysBusy = (this.googleSTT as any)?.hasPendingWork?.() === true;
+          if (sysBusy && Date.now() - quarantinedAt < QUARANTINE_MAX_MS) {
+            timer = setTimeout(tick, QUARANTINE_POLL_MS);
+            this._userFinalQuarantine.add(timer);
+            return;
+          }
+          this.dispatchTranscriptSegment(speaker, segment);
+        };
+        let timer = setTimeout(tick, QUARANTINE_POLL_MS);
+        this._userFinalQuarantine.add(timer);
+        return;
+      }
+
+      this.dispatchTranscriptSegment(speaker, segment);
     });
 
     // Consecutive failure counter — reset on any successful final transcript
@@ -3082,8 +3178,16 @@ export class AppState {
     // B11: timeout extended from 8000 → 12000ms to mirror the system-audio
     // watchdog. cpal cold-start on USB hot-replug or Bluetooth HFP transition
     // can take 5-9s on contended hardware.
-    const STUCK_WATCHDOG_MS = 12000;
+    // 2026-07-20: extended again 12s → 30s for the mic channel only. The Rust
+    // SilenceSuppressor gates near-silent chunks, so a user who simply doesn't
+    // speak during the first seconds of a meeting produces zero chunks and got
+    // a false "check your microphone" banner at +12s on every quiet start.
+    // The banner also now auto-dismisses on recovery (see micBannerActive).
+    const STUCK_WATCHDOG_MS = 30000;
     let stuckTimer: NodeJS.Timeout | null = null;
+    // True while a mic failure banner (stuck or zero-fill) is showing in the
+    // renderer — lets the data handler clear it as soon as real audio arrives.
+    let micBannerActive = false;
     const armStuckWatchdog = () => {
       if (stuckTimer) clearTimeout(stuckTimer);
       stuckTimer = setTimeout(() => {
@@ -3091,6 +3195,7 @@ export class AppState {
         if (chunkCount > 0) return;
         if (!this.isMeetingActive) return;
         console.warn(`${prefix}MicrophoneCapture produced 0 chunks in ${STUCK_WATCHDOG_MS / 1000}s — likely silent capture (device contention, hot-unplug, or muted input).`);
+        micBannerActive = true;
         this.sendAudioCaptureFailed( {
           channel: 'mic',
           message: `No audio detected from your microphone for ${STUCK_WATCHDOG_MS / 1000}s. Check that your input device is unmuted and not in use by another app.`,
@@ -3120,7 +3225,9 @@ export class AppState {
     // Same shape as the system tap zero-fill: chunks arrive on cadence but every
     // sample is 0. Without this, the user just sees an empty user transcript
     // and assumes the meeting itself is broken.
-    const ZEROFILL_OBSERVATION_MS = 12000;
+    // 2026-07-20: 12s → 30s, mirroring STUCK_WATCHDOG_MS above — 12s of
+    // near-silence at meeting start is normal (user listening, not talking).
+    const ZEROFILL_OBSERVATION_MS = 30000;
     let firstChunkAt = 0;
     let zerofillLatched = false;
     let zerofillTriggered = false;
@@ -3208,7 +3315,10 @@ export class AppState {
         }
       }
 
-      if (!zerofillLatched && !zerofillTriggered) {
+      // Run the peak scan while the detector is still observing OR while a
+      // failure banner is up (so recovery can clear it). Once real audio has
+      // been seen and no banner is showing, the scan is skipped entirely.
+      if (!zerofillLatched || micBannerActive) {
         if (firstChunkAt === 0) firstChunkAt = now;
         // B10: peak-to-peak detection — see wireSystemCapture for full rationale.
         // Pre-fix `abs(sample) > 8` false-latched on DC bias from muted-but-biased
@@ -3225,9 +3335,19 @@ export class AppState {
         const peakToPeak = maxS - minS;
         if (peakToPeak > 100) {
           zerofillLatched = true;
-        } else if (now - firstChunkAt >= ZEROFILL_OBSERVATION_MS) {
+          zerofillTriggered = false;
+          // The banner was a false alarm (or the condition resolved): real
+          // audio is flowing now — clear it instead of leaving a stale
+          // warning the user has to dismiss by hand.
+          if (micBannerActive) {
+            micBannerActive = false;
+            console.log(`${prefix}Mic audio detected — clearing mic capture warning.`);
+            this.sendAudioCaptureRecovered({ channel: 'mic' });
+          }
+        } else if (!zerofillLatched && !zerofillTriggered && now - firstChunkAt >= ZEROFILL_OBSERVATION_MS) {
           zerofillTriggered = true;
           console.warn(`${prefix}Mic chunks all zero-filled (peak-to-peak < 100) for ${ZEROFILL_OBSERVATION_MS / 1000}s — TCC denial or device-mute suspected.`);
+          micBannerActive = true;
           this.sendAudioCaptureFailed( {
             channel: 'mic',
             message: formatPermissionMessage('mic-zero-fill'),
@@ -4991,6 +5111,11 @@ export class AppState {
 
     const meetingGeneration = ++this._meetingGeneration;
     this.isMeetingActive = true;
+    // Fresh meeting → fresh echo-suppression window; drop any user finals
+    // still quarantined from the previous session.
+    this.echoGuard.reset();
+    for (const t of this._userFinalQuarantine) clearTimeout(t);
+    this._userFinalQuarantine.clear();
     this.broadcastMeetingState()
     if (metadata) {
       this.intelligenceManager.setMeetingMetadata(metadata);

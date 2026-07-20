@@ -21,7 +21,7 @@ import { app } from 'electron';
 import path from 'path';
 import { buildWorkerInitMessage } from './inferenceConfig';
 import { resolveWhisperWorkerPath } from './workerPathResolver';
-import { acquireOnnxSlot, hasEnoughMemoryForOnnxSession, getMinFreeGBForOnnxSession } from '../../utils/onnxThreadConfig';
+import { acquireOnnxSlot, hasEnoughMemoryForOnnxSession, getMinFreeGBForOnnxSession, withOnnxWorkerInitLock } from '../../utils/onnxThreadConfig';
 import {
     consumePoisonedOnnxLoad,
     isSentinelWithinTtl,
@@ -179,57 +179,73 @@ class ModelPreloader {
         }).catch(() => { /* should never reject */ });
 
         writeLoadSentinel(modelId);
-        const w = new Worker(workerPath);
-        this.loadingWorker = w;
-        // Stash release on the worker object so takeWarmWorker() can hand it
-        // off cleanly when LocalWhisperSTT picks up this warm worker.
-        (w as any).__slotRelease = () => {
-            if (slotRelease) { slotRelease(); slotRelease = null; }
-        };
-        w.on('exit', (code) => {
-            if (code === 0) {
-                clearLoadSentinel(modelId);
-            } else {
+        // Spawn INSIDE the global ONNX init lock and hold it until the worker
+        // reports ready (or fails) — concurrent onnxruntime native-binding
+        // loads across worker threads intermittently deadlock before their
+        // first console output (see onnxThreadConfig). If the model was
+        // switched while we waited for the lock, skip the stale spawn.
+        withOnnxWorkerInitLock(`whisper-warm:${modelId}`, () => new Promise<void>((resolve) => {
+            // The model may have been switched while this spawn waited its
+            // turn behind another worker's init — skip the stale spawn.
+            if (this.pendingModelId !== modelId || !this.loading) { resolve(); return; }
+
+            const w = new Worker(workerPath);
+            this.loadingWorker = w;
+
+            // Stash release on the worker object so takeWarmWorker() can hand it
+            // off cleanly when LocalWhisperSTT picks up this warm worker.
+            (w as any).__slotRelease = () => {
+                if (slotRelease) { slotRelease(); slotRelease = null; }
+            };
+            w.on('exit', (code) => {
+                resolve();
+                if (code === 0) {
+                    clearLoadSentinel(modelId);
+                } else {
+                    this.recordFailure(modelId);
+                }
+                if (this.loadingWorker === w) {
+                    this.loadingWorker = null;
+                    this.pendingModelId = null;
+                    this.loading = false;
+                }
+                (w as any).__slotRelease?.();
+            });
+
+            w.on('message', (msg: any) => {
+                if (msg.type === 'ready') {
+                    resolve();
+                    clearLoadSentinel(modelId);
+                    console.log(`[ModelPreloader] Worker warm for ${modelId}`);
+                    this.warmWorker = w;
+                    this.loadingWorker = null;
+                    this.warmModelId = modelId;
+                    this.pendingModelId = null;
+                    this.loading = false;
+                } else if (msg.type === 'error') {
+                    resolve();
+                    console.warn(`[ModelPreloader] Worker init failed: ${msg.message}`);
+                    this.recordFailure(modelId);
+                    clearLoadSentinel(modelId);
+                    w.terminate();
+                    this.loadingWorker = null;
+                    this.pendingModelId = null;
+                    this.loading = false;
+                }
+            });
+
+            w.on('error', (err) => {
+                resolve();
+                console.warn('[ModelPreloader] Worker error:', err.message);
                 this.recordFailure(modelId);
-            }
-            if (this.loadingWorker === w) {
                 this.loadingWorker = null;
                 this.pendingModelId = null;
                 this.loading = false;
-            }
-            (w as any).__slotRelease?.();
-        });
-        w.on('error', () => { (w as any).__slotRelease?.(); });
+                (w as any).__slotRelease?.();
+            });
 
-        w.on('message', (msg: any) => {
-            if (msg.type === 'ready') {
-                clearLoadSentinel(modelId);
-                console.log(`[ModelPreloader] Worker warm for ${modelId}`);
-                this.warmWorker = w;
-                this.loadingWorker = null;
-                this.warmModelId = modelId;
-                this.pendingModelId = null;
-                this.loading = false;
-            } else if (msg.type === 'error') {
-                console.warn(`[ModelPreloader] Worker init failed: ${msg.message}`);
-                this.recordFailure(modelId);
-                clearLoadSentinel(modelId);
-                w.terminate();
-                this.loadingWorker = null;
-                this.pendingModelId = null;
-                this.loading = false;
-            }
-        });
-
-        w.on('error', (err) => {
-            console.warn('[ModelPreloader] Worker error:', err.message);
-            this.recordFailure(modelId);
-            this.loadingWorker = null;
-            this.pendingModelId = null;
-            this.loading = false;
-        });
-
-        w.postMessage(buildWorkerInitMessage(modelId));
+            w.postMessage(buildWorkerInitMessage(modelId));
+        })).catch(() => { /* timeout logged by the lock; worker handlers own recovery */ });
     }
 
     private recordFailure(modelId: string): void {
