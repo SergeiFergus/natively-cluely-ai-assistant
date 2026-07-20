@@ -381,7 +381,26 @@ ANSWER SHAPE: ${intentResult.answerShape}
             // Resume facts (candidateProfile) are dropped when the route forbids
             // the resume layer — e.g. coding/DSA must not see resume context.
             const documentGroundedCustomModeActiveForPrompt = answerPlan?.documentGroundedCustomModeActive === true;
-            const effectiveCandidateProfile = (documentGroundedCustomModeActiveForPrompt || (answerPlan && !isLayerAllowed(answerPlan, 'resume')))
+            // OSS Profile Intelligence: when grounding already produced a candidate
+            // profile (the interviewer asked a candidate-directed question and a
+            // résumé is loaded), honour it for every answer type EXCEPT the ones
+            // where the résumé must never appear — pure coding/DSA/system-design,
+            // pure-JD role descriptions, negotiation, and sales. Without this, an
+            // experience question like "tell me about your Kafka work" that the
+            // planner filed as `technical_concept_answer` (no résumé layer) silently
+            // dropped the grounded profile and the model answered "I don't have your
+            // data loaded" — despite the résumé being loaded and grounded.
+            const RESUME_FORBIDDEN_ANSWER_TYPES = new Set([
+                'coding_question_answer', 'dsa_question_answer', 'system_design_answer',
+                'debugging_question_answer', 'jd_summary_answer', 'jd_requirements_answer',
+                'jd_fact_answer', 'negotiation_answer', 'sales_answer',
+            ]);
+            const profileWasGrounded = Boolean(candidateProfile && candidateProfile.trim().length > 0);
+            const resumeHardForbidden = answerPlan
+                ? (RESUME_FORBIDDEN_ANSWER_TYPES.has(String(answerPlan.answerType))
+                    || (!profileWasGrounded && !isLayerAllowed(answerPlan, 'resume')))
+                : false;
+            const effectiveCandidateProfile = (documentGroundedCustomModeActiveForPrompt || resumeHardForbidden)
                 ? undefined
                 : candidateProfile;
 

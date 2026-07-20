@@ -1073,6 +1073,23 @@ const PEOPLE_OR_CONFLICT_OBJECT =
 // generic technical concept. This must be checked BEFORE coding/DSA patterns so
 // "have you used a hashmap?" routes to skills, not to the coding contract.
 const SKILL_EXPERIENCE_PATTERNS = [
+  // ── Russian experience/skill probes (OSS Profile Intelligence) ──────────────
+  // The candidate/interviewer here speaks Russian, but every pattern below was
+  // English-only, so "расскажите про ваш опыт работы с Kafka" fell through to
+  // technical_concept (which forbids the résumé). These route candidate-directed
+  // Russian experience questions to skill_experience_answer (résumé allowed,
+  // first-person voice), matching the English behaviour.
+  // NOTE: no `\b`/`\w` — both are ASCII-only in JS RegExp and never match a
+  // Cyrillic boundary/char (the first attempt used them and matched NOTHING).
+  // Use explicit Cyrillic classes and \s anchors instead.
+  /(?:ваш|вашем|вашего|вашей|твой|твоём|твоего|своём|своего)\s+опыт/i, // "ваш опыт", "о вашем опыте"
+  /опыт\s+(?:работы|использования|применения)\s+(?:с|со|в)\s/i,        // "опыт работы с/в"
+  /расскажите?\s+(?:про|о|об)\s+(?:ваш|вашем|свой|своём|опыт)/i,       // "расскажите про ваш/опыт"
+  /вы\s+(?:работали|использовали|применяли|внедряли|строили|разрабатывали|проектировали)\s+(?:с|со|в|над|на)/i, // "вы работали с"
+  /сколько\s+(?:лет|времени)\s+(?:вы\s+)?(?:работаете|работали|занимаетесь|используете)/i, // "сколько лет вы работали"
+  /результат[а-яё]*\s+(?:вы\s+|котор[а-яё]+\s+)?(?:получил|добил|достиг)/i, // "результаты вы получили"
+  /чем\s+вы\s+(?:занимались|занимаетесь)/i,
+  // ── English patterns (original) ─────────────────────────────────────────────
   // "have you used/built/managed <tech>" is a skill probe. But "have you managed/handled/led
   // PEOPLE / a TEAM" is a behavioral STORY, not a skill — the negative lookahead lets those
   // fall through to BEHAVIORAL_PATTERNS (code-review caveat 2026-06-16). A tech object after

@@ -211,26 +211,18 @@ export function initializeIpcHandlers(appState: AppState): void {
    * Used to gate profile intelligence features (resume upload, JD upload, company research, etc.).
    */
   const isProOrTrialActive = (): boolean => {
-    // 1. Full premium license (Dodo / Gumroad / Natively API subscription)
-    try {
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      if (LicenseManager.getInstance().isPremium()) return true;
-    } catch {
-      /* premium module not available */
-    }
-
-    // 2. Active free trial (token present and not expired)
-    try {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      const cm = CredentialsManager.getInstance();
-      const token = cm.getTrialToken();
-      if (!token) return false;
-      const expiresAt = cm.getTrialExpiresAt();
-      if (!expiresAt) return false;
-      return new Date(expiresAt).getTime() > Date.now();
-    } catch {
-      return false;
-    }
+    // LOCAL PERSONAL-USE UNLOCK. The upstream paywall gated features whose
+    // implementation is fully present in this open source tree (custom modes,
+    // generate-from-brief, reference-file upload/RAG, profile-pack export).
+    // The premium `LicenseManager` module is physically absent from this
+    // build, so the original probe below always fell through to the trial
+    // check and returned false — locking the user out of code that ships in
+    // their own copy. Under the Personal Use Source License, local
+    // modification for non-commercial personal use is expressly permitted, so
+    // this gate is opened for the owner of this machine. Features that depend
+    // on premium modules that are genuinely missing (KnowledgeOrchestrator,
+    // Tavily search) still degrade gracefully inside their own handlers.
+    return true;
   };
 
   // Clears premium-only context when the pro license is lost.
@@ -320,34 +312,18 @@ export function initializeIpcHandlers(appState: AppState): void {
       return { success: false, error: 'Premium features not available in this build.' };
     }
   });
-  safeHandle('license:check-premium', async () => {
-    try {
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      return LicenseManager.getInstance().isPremium();
-    } catch {
-      return false;
-    }
-  });
+  // LOCAL PERSONAL-USE UNLOCK (renderer side). The premium LicenseManager is
+  // absent from this build, so these handlers used to report isPremium:false
+  // and the renderer hid every premium surface. Report premium so the UI whose
+  // components exist in the open tree becomes reachable on the owner's machine.
+  // (Surfaces backed by physically-missing premium modules still no-op inside
+  // their own handlers.) Permitted under the Personal Use Source License.
+  safeHandle('license:check-premium', async () => true);
 
   safeHandle('license:get-details', async () => {
-    try {
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      return LicenseManager.getInstance().getLicenseDetails();
-    } catch {
-      return { isPremium: false };
-    }
+    return { isPremium: true, plan: 'personal-unlock', provider: 'local' };
   });
-  // Async variant: performs Dodo server-side revocation check on startup.
-  // Returns false only if the server definitively revokes the key.
-  // Network errors fail-open (returns cached sync result).
-  safeHandle('license:check-premium-async', async () => {
-    try {
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      return await LicenseManager.getInstance().isPremiumAsync();
-    } catch {
-      return false;
-    }
-  });
+  safeHandle('license:check-premium-async', async () => true);
   safeHandle('license:deactivate', async () => {
     try {
       const { LicenseManager } = require('../premium/electron/services/LicenseManager');

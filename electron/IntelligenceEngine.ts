@@ -1095,12 +1095,21 @@ export class IntelligenceEngine extends EventEmitter {
                     // non-profile (e.g. negotiation) results, so widening the type
                     // set here only ADDS legitimate candidate grounding; it cannot
                     // pull salary/coaching into a plain answer.
+                    // 'technical' added (OSS profile intelligence): "tell me about
+                    // your experience with X / what results did you get" is
+                    // candidate-directed and answerable from the résumé, but the
+                    // extractor files it under 'technical' (matches "how/explain/
+                    // implement" + tech nouns). Without it, experience questions
+                    // went un-grounded and the model asked to clarify. 'negotiation'
+                    // stays excluded (salary) and the orchestrator's factualRecall
+                    // gate still rejects any non-profile result.
                     const groundable = extracted.detectedSpeaker === 'interviewer'
                         && extracted.confidence >= 0.6
                         && (extracted.questionType === 'identity'
                             || extracted.questionType === 'profile_detail'
                             || extracted.questionType === 'behavioral'
                             || extracted.questionType === 'jd_alignment'
+                            || extracted.questionType === 'technical'
                             || extracted.questionType === 'general'
                             || extracted.questionType === 'follow_up');
                     // Grounding runs when NO explicit typed question was supplied
