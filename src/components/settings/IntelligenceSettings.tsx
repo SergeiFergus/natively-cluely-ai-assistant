@@ -298,6 +298,126 @@ const StatusChip: React.FC<{ status: ConnStatus; testing: boolean; onRetry: () =
   );
 };
 
+/**
+ * MeetingBriefCard — pre-meeting lore/briefing editor.
+ *
+ * The polished Modes manager UI ships in the closed-source `premium/` bundle,
+ * so in the open build the modes window renders an empty stub — yet the
+ * ENTIRE backend is open: `customContext` of the active mode is pinned into
+ * every "What to answer" prompt (see IntelligenceEngine: "customContext is
+ * pinned, not retrieved"). This card exposes that seam: it edits the built-in
+ * General mode's customContext through the un-gated `modes:update` path and
+ * activates the mode via `modes:set-active` (also un-gated for `general`).
+ * The user writes who the meeting is with, the topic, expected questions —
+ * and every hint is generated with that brief in context.
+ */
+const MeetingBriefCard: React.FC = () => {
+  const t = useT();
+  const [modeId, setModeId] = useState<string | null>(null);
+  const [isModeActive, setIsModeActive] = useState(false);
+  const [brief, setBrief] = useState('');
+  const [savedBrief, setSavedBrief] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [savedFlash, setSavedFlash] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const modes = await (window.electronAPI as any).modesGetAll?.();
+        if (!mounted || !Array.isArray(modes)) { setLoading(false); return; }
+        // Prefer the ACTIVE general-template mode; fall back to the built-in
+        // "General" mode. Non-general (premium) modes are not editable here.
+        const active = modes.find((m: any) => m.isActive && m.templateType === 'general');
+        const general = active ?? modes.find((m: any) => m.templateType === 'general' && m.name === 'General') ?? modes.find((m: any) => m.templateType === 'general');
+        if (general) {
+          setModeId(general.id);
+          setIsModeActive(!!general.isActive);
+          setBrief(general.customContext || '');
+          setSavedBrief(general.customContext || '');
+        }
+      } catch { /* modes API unavailable — card stays in empty state */ }
+      finally { if (mounted) setLoading(false); }
+    })();
+    return () => { mounted = false; };
+  }, []);
+
+  const dirty = brief !== savedBrief;
+
+  const onSave = useCallback(async () => {
+    if (!modeId || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await (window.electronAPI as any).modesUpdate?.(modeId, { customContext: brief });
+      if (res?.success === false) throw new Error(res.error || 'save_failed');
+      // Pin the brief into live prompts: the mode must be ACTIVE to be injected.
+      if (!isModeActive) {
+        const act = await (window.electronAPI as any).modesSetActive?.(modeId);
+        if (act?.success !== false) setIsModeActive(true);
+      }
+      setSavedBrief(brief);
+      setSavedFlash(true);
+      setTimeout(() => setSavedFlash(false), 2500);
+    } catch (e: any) {
+      setError(e?.message || 'save_failed');
+    } finally {
+      setSaving(false);
+    }
+  }, [modeId, brief, isModeActive, saving]);
+
+  return (
+    <section className="rounded-xl border border-border-subtle bg-bg-item-surface p-5 space-y-3">
+      <div className="min-w-0">
+        <h3 className="text-sm font-semibold text-text-primary">{t('Meeting brief')}</h3>
+        <p className="mt-1 text-xs leading-relaxed text-text-secondary">
+          {t('Tell the assistant about the upcoming meeting before you start: who you are talking to, the topic, expected questions, facts to lean on. This brief is included with every hint it gives you.')}
+        </p>
+      </div>
+      {loading ? (
+        <div className="flex items-center gap-2 text-xs text-text-secondary"><Loader2 className="h-3.5 w-3.5 animate-spin" />{t('Loading…')}</div>
+      ) : modeId ? (
+        <>
+          <textarea
+            value={brief}
+            onChange={(e) => setBrief(e.target.value)}
+            rows={7}
+            maxLength={8000}
+            placeholder={t('Example: Interview with TechCorp for a Senior Python Developer role. Interviewer: Anna, Head of Engineering. Expect questions about asyncio, PostgreSQL optimization and my last project — a logistics API serving 2M requests/day. Keep answers concise and confident.')}
+            className="w-full resize-y rounded-lg border border-border-subtle bg-bg-main px-3 py-2.5 text-xs leading-relaxed text-text-primary placeholder:text-text-tertiary focus:border-accent-primary focus:outline-none"
+          />
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-[11px] text-text-tertiary">
+              {isModeActive
+                ? t('Active — included in every hint.')
+                : t('Will be activated on save.')}
+              {error ? <span className="ml-2 text-red-400">{error}</span> : null}
+            </div>
+            <div className="flex items-center gap-2">
+              {savedFlash && !dirty ? (
+                <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400"><Check className="h-3.5 w-3.5" />{t('Saved')}</span>
+              ) : null}
+              <button
+                type="button"
+                onClick={onSave}
+                disabled={!dirty || saving}
+                className="h-8 inline-flex items-center gap-1.5 rounded-md bg-accent-primary/10 px-3.5 text-xs font-medium text-accent-primary transition-colors hover:bg-accent-primary/20 disabled:opacity-40"
+              >
+                {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                {t('Save brief')}
+              </button>
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="text-xs text-text-secondary">{t('Modes are unavailable in this build.')}</div>
+      )}
+    </section>
+  );
+};
+
 export const IntelligenceSettings: React.FC = () => {
   const t = useT();
   const [flags, setFlags] = useState<FlagRow[]>([]);
@@ -616,6 +736,9 @@ export const IntelligenceSettings: React.FC = () => {
           {t('Tune features that surface during real-time conversations, lectures, and meetings.')}
         </p>
       </header>
+
+      {/* ── Meeting brief (pre-meeting lore for the assistant) ───── */}
+      <MeetingBriefCard />
 
       {/* ── Long-term memory (Hindsight) ─────────────────────────── */}
       <section className="rounded-xl border border-border-subtle bg-bg-item-surface p-5 space-y-4">
