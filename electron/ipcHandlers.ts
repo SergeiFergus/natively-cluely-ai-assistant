@@ -1757,6 +1757,17 @@ export function initializeIpcHandlers(appState: AppState): void {
           // grounding belongs in a policy redirect (release 2026-06-06b).
           const isSafetyAnswer = answerPlan.answerType === 'ethical_usage_answer';
           const ignoreKnowledge = isCodingChat || isSafetyAnswer ? true : options?.ignoreKnowledgeMode;
+          // OSS web grounding: actualize typed chat answers from the internet when
+          // the question needs fresh/external facts. Prepend the evidence to the
+          // context the model streams from. Skipped for coding/safety answers.
+          if (!isCodingChat && !isSafetyAnswer) {
+            try {
+              const webCtx = await intelligenceManager.getWebGrounding(message, answerPlan.answerType);
+              if (webCtx) context = context ? `${webCtx}\n\n${context}` : webCtx;
+            } catch (webErr: any) {
+              console.warn('[IPC] chat web grounding skipped:', webErr?.message);
+            }
+          }
           chatTrace.mark('provider_request_started', { ignoreKnowledgeMode: Boolean(ignoreKnowledge) });
           const stream = llmHelper.streamChat(
             message,

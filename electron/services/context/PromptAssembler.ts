@@ -223,6 +223,10 @@ export class PromptAssembler {
          * prompt — this only supplies facts, never a persona override.
          */
         candidateProfile?: string;
+        /** Fresh web-search evidence (OSS web grounding). Already XML-tagged as
+         *  <web_evidence> by WebGroundingEngine.formatEvidence — injected as
+         *  untrusted external context the model may cite for current facts. */
+        webContext?: string;
         tokenBudget: number;
         systemPrompt: string;
         developerPrompt?: string;
@@ -272,6 +276,19 @@ export class PromptAssembler {
                 // needed for first-party data, consistent with existing
                 // candidate-node handling.
                 content: params.candidateProfile.trim(),
+            });
+        }
+
+        // 2c. WEB EVIDENCE — fresh live-search results (OSS web grounding). Placed
+        //     right after profile so factual/current questions can be answered
+        //     from up-to-date sources, but below the candidate's own facts.
+        if (params.webContext && params.webContext.trim()) {
+            this.addBlock(packet, {
+                type: 'web_evidence',
+                trustLevel: TrustLevel.UNTRUSTED_REFERENCE,
+                source: 'web_search',
+                tokenBudget: 1400,
+                content: escapeUserContent(params.webContext.trim()),
             });
         }
 

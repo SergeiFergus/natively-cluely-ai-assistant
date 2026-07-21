@@ -433,6 +433,7 @@ ANSWER SHAPE: ${intentResult.answerShape}
                 + estimateTokens(modeContextBlock)
                 + estimateTokens(pinnedModeInstructions)
                 + estimateTokens(effectiveCandidateProfile || '')
+                + estimateTokens(requestSnapshot?.webContext || '')
                 + estimateTokens(screenContext?.ocrText || '')
                 + domTokenEstimate
                 + estimateTokens((temporalContext?.previousResponses || []).join('\n'));
@@ -477,6 +478,7 @@ ANSWER SHAPE: ${intentResult.answerShape}
                 retrievedModeContext: modeContextBlock || undefined,
                 pinnedModeInstructions: pinnedModeInstructions || undefined,
                 candidateProfile: effectiveCandidateProfile || undefined,
+                webContext: requestSnapshot?.webContext || undefined,
                 tokenBudget: Math.max(1000, assemblerBudget),
                 systemPrompt: finalPromptOverride,
             });

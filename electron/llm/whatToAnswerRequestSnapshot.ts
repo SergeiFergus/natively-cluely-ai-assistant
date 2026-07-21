@@ -74,6 +74,10 @@ export interface WhatToAnswerRequestSnapshot {
   /** The generation id for this request. Stamped onto every emitted live token so
    *  the renderer can reject tokens from a superseded answer (#3). */
   readonly generationId: number;
+  /** Fresh web-search evidence (OSS web grounding), already formatted as a
+   *  <web_evidence> block. Threaded here to avoid churning generateStream's
+   *  positional signature; WhatToAnswerLLM passes it to PromptAssembler. */
+  readonly webContext?: string;
 }
 
 /** Minimal interface for the bits of ModesManager the snapshot reads. Keeps this

@@ -1377,6 +1377,23 @@ export class IntelligenceEngine extends EventEmitter {
 
             trace.mark('provider_request_started', { answerType: answerPlan.answerType });
 
+            // ── WEB GROUNDING (OSS "actualize from the internet") ──────────────
+            // When enabled and the question needs fresh/external facts, fetch live
+            // web evidence and thread it into the prompt via the request snapshot.
+            // Bounded by a short timeout so a slow search never stalls the answer;
+            // skipped for coding/DSA and for résumé-identity questions (grounded
+            // from the profile instead).
+            let webContext = '';
+            try {
+                webContext = await this.buildWebContext(
+                    extractedQuestion.latestQuestion || lastInterviewerTurn || question || '',
+                    answerPlan.answerType,
+                    Boolean(candidateProfile),
+                );
+            } catch (webErr: any) {
+                console.warn('[IntelligenceEngine] web grounding skipped:', webErr?.message);
+            }
+
             // Assemble the immutable request snapshot now that generationId is minted.
             // It carries the t0 mode (so WTA's prompt builders read the SAME mode the
             // plan above used — #6), the correlation ids (#9), and the generationId
@@ -1390,6 +1407,7 @@ export class IntelligenceEngine extends EventEmitter {
                 meetingId: meetingMarker,
                 surface: 'what_to_answer' as const,
                 generationId,
+                webContext: webContext || undefined,
             });
 
             // RC-03 fix: hold a reference to the generator so we can call .return()
@@ -2393,9 +2411,18 @@ export class IntelligenceEngine extends EventEmitter {
                 speakerPerspective: 'user',
                 activeMode: activeModeInfo,
             });
-            const context = activeModeInfo?.documentGroundedCustomModeActive === true || isCodingAnswerType(answerPlan.answerType)
+            let context = activeModeInfo?.documentGroundedCustomModeActive === true || isCodingAnswerType(answerPlan.answerType)
                 ? undefined
                 : this.session.getFormattedContext(120);
+            // OSS web grounding: actualize the manual answer from the internet when
+            // the question needs fresh/external facts. Prepend the evidence to the
+            // conversation context so the model can cite current sources.
+            try {
+                const webCtx = await this.buildWebContext(question, answerPlan.answerType, false);
+                if (webCtx) context = context ? `${webCtx}\n\n${context}` : webCtx;
+            } catch (webErr: any) {
+                console.warn('[IntelligenceEngine] manual web grounding skipped:', webErr?.message);
+            }
             let answer = await this.answerLLM.generate(question, context, answerPlan);
             const structureValidation = validateAnswerStructure(answerPlan.answerType, answer);
             if (!structureValidation.ok && structureValidation.repaired) {
@@ -2604,6 +2631,102 @@ export class IntelligenceEngine extends EventEmitter {
             this.activeMode = mode;
             this.emit('mode_changed', mode);
         }
+    }
+
+    // Cached web-grounding engine (rebuilt when the Tavily key changes).
+    private _webEngine: any = null;
+    private _webEngineKey: string | undefined = undefined;
+
+    /** Public entry for other answer paths (e.g. the gemini-chat-stream IPC) to
+     *  fetch a <web_evidence> block for a question. Returns '' when not applicable. */
+    public async getWebGrounding(question: string, answerType: string): Promise<string> {
+        try {
+            return await this.buildWebContext(question, answerType, false);
+        } catch (e: any) {
+            console.warn('[IntelligenceEngine] getWebGrounding failed:', e?.message);
+            return '';
+        }
+    }
+
+    /**
+     * OSS web grounding: fetch fresh internet evidence for questions that need
+     * current/external facts, formatted as a <web_evidence> block for the prompt.
+     * Returns '' when disabled, not applicable, or nothing useful was found.
+     *
+     * Gated to keep the live answer fast and relevant:
+     *   • setting `webGroundingEnabled` must not be false (default ON);
+     *   • coding/DSA/system-design answers are skipped (no web needed);
+     *   • pure résumé-identity questions are skipped (grounded from the profile);
+     *   • the question must look like it needs external/current facts, UNLESS the
+     *     user set `webGroundingAlways` to search on every eligible question.
+     */
+    private async buildWebContext(question: string, answerType: string, hasProfile: boolean): Promise<string> {
+        const q = (question || '').trim();
+        if (q.length < 6) return '';
+
+        let enabled = true;
+        let always = false;
+        let tavilyKey: string | undefined;
+        try {
+            const { SettingsManager } = require('./services/SettingsManager');
+            const sm = SettingsManager.getInstance();
+            enabled = sm.get('webGroundingEnabled') !== false;
+            always = sm.get('webGroundingAlways') === true;
+        } catch { /* settings unavailable — default ON */ }
+        if (!enabled) return '';
+
+        // Never web-ground code generation or résumé-identity questions.
+        const CODING = /(coding_question|dsa_question|system_design|debugging_question)_answer/;
+        if (CODING.test(answerType)) return '';
+        const IDENTITY = /(identity_answer|profile_fact_answer|skills_answer|skill_experience_answer|experience_answer|project_answer)/;
+        if (hasProfile && IDENTITY.test(answerType)) return '';
+
+        const fresh = always || IntelligenceEngine.questionNeedsFreshFacts(q);
+        console.log('[IntelligenceEngine] web-grounding gate', { enabled, always, answerType, fresh, qLen: q.length });
+        if (!fresh) return '';
+
+        try {
+            const { CredentialsManager } = require('./services/CredentialsManager');
+            tavilyKey = CredentialsManager.getInstance().getTavilyApiKey?.();
+        } catch { /* no key — DDG fallback */ }
+
+        if (!this._webEngine || this._webEngineKey !== tavilyKey) {
+            const { WebGroundingEngine } = require('../premium/electron/knowledge/WebGroundingEngine');
+            this._webEngine = new WebGroundingEngine(tavilyKey);
+            this._webEngineKey = tavilyKey;
+        }
+
+        const WEB_BUDGET_MS = 4500;
+        const results = await this._webEngine.search(q, WEB_BUDGET_MS);
+        console.log('[IntelligenceEngine] web-grounding search done', { backend: this._webEngine.usingTavily ? 'tavily' : 'ddg', results: results?.length || 0 });
+        if (!results || !results.length) return '';
+        const { WebGroundingEngine } = require('../premium/electron/knowledge/WebGroundingEngine');
+        const block = WebGroundingEngine.formatEvidence(results);
+        console.log('[IntelligenceEngine] Web-grounded answer', {
+            backend: this._webEngine.usingTavily ? 'tavily' : 'duckduckgo',
+            results: results.length,
+            chars: block.length,
+        });
+        return block;
+    }
+
+    /**
+     * Heuristic: does this question need up-to-date or external facts (vs. being
+     * answerable from reasoning / the candidate's own profile)? Covers current
+     * events, named entities, prices/rates, dates/versions, and their Russian
+     * equivalents. Deliberately broad — a false positive just adds context.
+     */
+    private static questionNeedsFreshFacts(q: string): boolean {
+        const t = q.toLowerCase();
+        const FRESH = [
+            /\b(latest|current|newest|recent|today|now|this year|202[4-9]|nowadays|up to date|as of)\b/,
+            /\b(price|cost|stock|rate|exchange|weather|news|release|version|launch|deadline|schedule)\b/,
+            /\b(who is|what is|when did|when is|where is|how much|how many)\b/,
+            /(последн|актуальн|сейчас|сегодня|нынешн|свеж|текущ|на данный момент|в этом году|202[4-9])/,
+            /(цена|стоимост|курс|погода|новост|релиз|верси|запуск|дедлайн|расписани|акци)/,
+            /(кто так(ой|ая|ие)|что так(ое|ие)|когда (выйдет|вышел|будет)|сколько стоит|где (нахо|купить))/,
+        ];
+        return FRESH.some((re) => re.test(t));
     }
 
     /**

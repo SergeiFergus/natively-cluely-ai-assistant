@@ -185,6 +185,11 @@ export class IntelligenceManager extends EventEmitter {
         return this.engine.runManualAnswer(question);
     }
 
+    /** OSS web grounding for the chat-stream path — <web_evidence> block or ''. */
+    async getWebGrounding(question: string, answerType: string): Promise<string> {
+        return this.engine.getWebGrounding(question, answerType);
+    }
+
     async runCodeHint(imagePaths?: string[], problemStatement?: string): Promise<string | null> {
         return this.engine.runCodeHint(imagePaths, problemStatement);
     }
